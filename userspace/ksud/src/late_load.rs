@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use log::{info, warn};
 use rustix::cstr;
 use std::process::Command;
+use std::thread::sleep;
+use std::time::Duration;
 
 use crate::module::{handle_updated_modules, prune_modules};
 use crate::{assets, defs, init_event, metamodule, restorecon, utils};
@@ -130,18 +132,81 @@ pub fn run(package_name: &String, kmi: Option<String>, allow_shell: bool) -> Res
     // 13. Execute boot-completed stage scripts (non-blocking)
     init_event::run_stage("boot-completed", false);
 
-    // 14. Restart Manager so it gets a fresh ksu fd from the newly loaded kernel module
+    // 14. Restart Manager so it gets a fresh ksu fd from the newly loaded kernel module.
+    // The Java/Kotlin namespace may differ from the APK applicationId, so resolve
+    // the launcher activity by package instead of constructing a class name.
     info!("Restarting KernelSU Manager {package_name}...");
-    let _ = Command::new("am")
+
+    match Command::new("am")
         .args(["force-stop", package_name])
-        .status();
-    let _ = Command::new("am")
-        .args([
-            "start",
-            "-n",
-            &format!("{package_name}/me.weishu.kernelsu.ui.MainActivity"),
-        ])
-        .status();
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => warn!("am force-stop returned {status} for Manager {package_name}"),
+        Err(e) => warn!("failed to force-stop Manager {package_name}: {e}"),
+    }
+
+    sleep(Duration::from_millis(250));
+
+    let mut restarted = false;
+    for attempt in 1..=5 {
+        let result = Command::new("am")
+            .args([
+                "start", "-W", "-a", "android.intent.action.MAIN",
+                "-c", "android.intent.category.LAUNCHER", "-p", package_name,
+            ])
+            .output();
+        match result {
+            Ok(output) if output.status.success() => {
+                info!("KernelSU Manager {package_name} restarted on attempt {attempt}");
+                restarted = true;
+                break;
+            }
+            Ok(output) => warn!(
+                "Manager restart attempt {attempt} failed: status={}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout).trim(),
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ),
+            Err(e) => warn!("failed to execute ActivityManager on attempt {attempt}: {e}"),
+        }
+        sleep(Duration::from_millis(300));
+    }
+
+    if !restarted {
+        // Compatibility fallback: ask PackageManager for the actual launcher
+        // component, then start that component explicitly.
+        match Command::new("cmd")
+            .args(["package", "resolve-activity", "--brief", package_name])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let component = String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| line.contains('/'))
+                    .unwrap_or_default()
+                    .to_string();
+                if component.is_empty() {
+                    warn!("PackageManager returned no launcher component for {package_name}");
+                } else {
+                    match Command::new("am").args(["start", "-W", "-n", &component]).status() {
+                        Ok(status) if status.success() => {
+                            info!("KernelSU Manager restarted using resolved component {component}");
+                        }
+                        Ok(status) => warn!("resolved Manager component failed to start: {status}"),
+                        Err(e) => warn!("failed to start resolved Manager component: {e}"),
+                    }
+                }
+            }
+            Ok(output) => warn!(
+                "failed to resolve Manager launcher: status={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ),
+            Err(e) => warn!("failed to execute PackageManager resolver: {e}"),
+        }
+    }
 
     Ok(())
 }
