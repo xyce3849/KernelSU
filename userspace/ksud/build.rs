@@ -233,9 +233,15 @@ fn main() {
             (0, "0.0.0".to_string())
         }
     };
-    if env::var("KSU_PACKAGE_NAME").is_err() {
-        println!("cargo:rustc-env=KSU_PACKAGE_NAME=me.weishu.kernelsu");
-    }
+    // KSU_PACKAGE_NAME is compiled into ksud. Invalidate the Cargo build-script
+    // cache when it changes so cached builds cannot keep an old package name.
+    println!("cargo:rerun-if-env-changed=KSU_PACKAGE_NAME");
+    let package_name = env::var("KSU_PACKAGE_NAME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "me.weishu.kernelsu".to_string());
+    println!("cargo:rustc-env=KSU_PACKAGE_NAME={package_name}");
+    println!("cargo:warning=Building ksud for manager package: {package_name}");
     println!("cargo:rustc-env=VERSION_CODE={code}");
     println!("cargo:rustc-env=VERSION_NAME={name}");
 
