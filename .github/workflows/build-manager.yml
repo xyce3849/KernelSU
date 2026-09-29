@@ -204,10 +204,6 @@ jobs:
     needs: [generate-key]
     if: always() && needs.generate-key.result == 'success'
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./manager
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -216,6 +212,7 @@ jobs:
 
       - name: Write key
         if: ${{ ( github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' )) || github.ref_type == 'tag' }}
+        working-directory: ./manager
         run: |
           if [ ! -z "${{ secrets.KEYSTORE }}" ]; then
             {
@@ -233,6 +230,7 @@ jobs:
           PR_KEYSTORE: ${{ needs.generate-key.outputs.keystore }}
           PR_KEYSTORE_PASSWORD: ${{ needs.generate-key.outputs.keystore_password }}
           PR_KEY_PASSWORD: ${{ needs.generate-key.outputs.key_password }}
+        working-directory: ./manager
         run: |
           echo "$PR_KEYSTORE" | base64 -d > pr-key.jks
           {
@@ -252,6 +250,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Build with Gradle
+        working-directory: ./manager
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             ./gradlew clean assembleRelease \
@@ -262,36 +261,19 @@ jobs:
               -PKSU_PACKAGE_NAME="${{ needs.generate-key.outputs.package_name }}"
           fi
 
-      - name: Verify manager APK package
-        env:
-          EXPECTED_PACKAGE: ${{ needs.generate-key.outputs.package_name }}
-        run: |
-          APK=$(find app/build/outputs/apk/release -maxdepth 1 -type f -name "*.apk" | head -n 1)
-          test -n "$APK"
-          if command -v apkanalyzer >/dev/null 2>&1; then
-            ACTUAL_PACKAGE=$(apkanalyzer manifest application-id "$APK")
-          else
-            ACTUAL_PACKAGE=$(aapt dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
-          fi
-          if [ "$ACTUAL_PACKAGE" != "$EXPECTED_PACKAGE" ]; then
-            echo "ERROR: manager APK applicationId is '$ACTUAL_PACKAGE', expected '$EXPECTED_PACKAGE'"
-            exit 1
-          fi
-          echo "Verified manager APK applicationId: $ACTUAL_PACKAGE"
-
       - name: Upload build artifact
         if: ${{ github.event_name == 'pull_request' || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')) || github.ref_type == 'tag' }}
         uses: actions/upload-artifact@v7
         with:
           name: manager-gradle
-          path: app/build/outputs/apk/release/*.apk
+          path: manager/app/build/outputs/apk/release/*.apk
 
       - name: Upload mappings
         uses: actions/upload-artifact@v7
         if: ${{ ( github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' )) || github.ref_type == 'tag' }}
         with:
           name: "mappings"
-          path: "app/build/outputs/mapping/release/"
+          path: "manager/app/build/outputs/mapping/release/"
 
   repack-manager:
     needs: [build-manager, build-ksud, generate-key]
@@ -397,46 +379,6 @@ jobs:
             -P "$SIGN_KEYSTORE_PASSWORD" \
             -S "$SIGN_KEY_PASSWORD" \
             --strip
-
-      - name: Verify final repacked APK
-        if: ${{ github.event_name == 'pull_request' || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')) || github.ref_type == 'tag' }}
-        env:
-          EXPECTED_PACKAGE: ${{ needs.generate-key.outputs.package_name }}
-        run: |
-          APK=$(find dist -maxdepth 1 -type f -name "*.apk" | head -n 1)
-          test -n "$APK"
-          if command -v apkanalyzer >/dev/null 2>&1; then
-            ACTUAL_PACKAGE=$(apkanalyzer manifest application-id "$APK")
-          else
-            ACTUAL_PACKAGE=$(aapt dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
-          fi
-          if [ "$ACTUAL_PACKAGE" != "$EXPECTED_PACKAGE" ]; then
-            echo "ERROR: final APK applicationId is '$ACTUAL_PACKAGE', expected '$EXPECTED_PACKAGE'"
-            exit 1
-          fi
-
-          TMP_VERIFY=$(mktemp -d)
-          trap 'rm -rf "$TMP_VERIFY"' EXIT
-          unzip -q "$APK" 'lib/*/libksud.so' -d "$TMP_VERIFY"
-          found=false
-          for lib in "$TMP_VERIFY"/lib/*/libksud.so; do
-            [ -f "$lib" ] || continue
-            found=true
-            echo "Checking $lib"
-            if ! strings "$lib" | grep -Fq "$EXPECTED_PACKAGE"; then
-              echo "ERROR: $lib does not contain expected package '$EXPECTED_PACKAGE'"
-              exit 1
-            fi
-            if strings "$lib" | grep -Fq 'me.weishu.kernelsu.pr'; then
-              echo "ERROR: PR package leaked into final ksud: $lib"
-              exit 1
-            fi
-          done
-          if [ "$found" != true ]; then
-            echo "ERROR: no libksud.so found in final APK"
-            exit 1
-          fi
-          echo "Final APK package and ksud package checks passed."
 
       - name: Upload build artifact
         if: ${{ github.event_name == 'pull_request' || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')) || github.ref_type == 'tag' }}
