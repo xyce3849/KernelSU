@@ -266,7 +266,7 @@ jobs:
         env:
           EXPECTED_PACKAGE: ${{ needs.generate-key.outputs.package_name }}
         run: |
-          APK=$(find manager/app/build/outputs/apk/release -maxdepth 1 -type f -name "*.apk" | head -n 1)
+          APK=$(find app/build/outputs/apk/release -maxdepth 1 -type f -name "*.apk" | head -n 1)
           test -n "$APK"
           if command -v apkanalyzer >/dev/null 2>&1; then
             ACTUAL_PACKAGE=$(apkanalyzer manifest application-id "$APK")
@@ -284,14 +284,14 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: manager-gradle
-          path: manager/app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/release/*.apk
 
       - name: Upload mappings
         uses: actions/upload-artifact@v7
         if: ${{ ( github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' )) || github.ref_type == 'tag' }}
         with:
           name: "mappings"
-          path: "manager/app/build/outputs/mapping/release/"
+          path: "app/build/outputs/mapping/release/"
 
   repack-manager:
     needs: [build-manager, build-ksud, generate-key]
