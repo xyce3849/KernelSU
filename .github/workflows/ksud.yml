@@ -13,6 +13,10 @@ on:
         required: false
         type: boolean
         default: false
+      package_name:
+        required: false
+        type: string
+        default: ""
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -62,6 +66,8 @@ jobs:
       run: |
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           export KSU_PACKAGE_NAME="me.weishu.kernelsu.pr"
+        elif [ -n "${{ inputs.package_name }}" ]; then
+          export KSU_PACKAGE_NAME="${{ inputs.package_name }}"
         fi
         if [ "${{ inputs.target }}" = riscv64-linux-android ]; then
           source .github/scripts/setup-rust-build.sh riscv64-linux-android 35
