@@ -36,6 +36,7 @@ on:
       - 'Cargo.lock'
       - 'Cargo.toml'
   workflow_call:
+  workflow_dispatch:
 
 jobs:
   generate-key:
@@ -46,7 +47,17 @@ jobs:
       keystore: ${{ steps.gen.outputs.keystore }}
       keystore_password: ${{ steps.gen.outputs.keystore_password }}
       key_password: ${{ steps.gen.outputs.key_password }}
+      package_name: ${{ steps.pkg.outputs.package_name }}
     steps:
+      - name: Set custom package name
+        id: pkg
+        run: |
+          # ===== 自定义包名：想换名字只改这一行 =====
+          # 规则：全小写字母和点，如 com.example.manager
+          # 不要用官方的 me.weishu.kernelsu
+          echo "package_name=io.github.xyce3849.kmanager" >> $GITHUB_OUTPUT
+          echo "Custom package name: io.github.xyce3849.kmanager"
+
       - name: Generate temporary keystore
         if: github.event_name == 'pull_request'
         id: gen
@@ -105,7 +116,7 @@ jobs:
     uses: ./.github/workflows/ksuinit.yml
 
   build-ksud:
-    needs: [build-lkm, build-ksuinit]
+    needs: [build-lkm, build-ksuinit, generate-key]
     strategy:
       matrix:
         include:
@@ -117,6 +128,7 @@ jobs:
       target: ${{ matrix.target }}
       pack_lkm: true
       pack_ksuinit: true
+      package_name: ${{ needs.generate-key.outputs.package_name }}
   
   build-ksud-extra:
     needs: [build-lkm, build-ksuinit]
@@ -196,7 +208,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             ./gradlew clean assembleRelease -PIS_PR_BUILD=true
           else
-            ./gradlew clean assembleRelease
+            ./gradlew clean assembleRelease -PKSU_PACKAGE_NAME="${{ needs.generate-key.outputs.package_name }}"
           fi
 
       - name: Upload build artifact
