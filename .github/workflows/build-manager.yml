@@ -36,7 +36,19 @@ on:
       - 'Cargo.lock'
       - 'Cargo.toml'
   workflow_call:
+    inputs:
+      package_name:
+        description: 'Manager applicationId/package name'
+        required: false
+        default: 'io.github.xyce3849.kmanager'
+        type: string
   workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Manager applicationId/package name'
+        required: false
+        default: 'io.github.xyce3849.kmanager'
+        type: string
 
 jobs:
   generate-key:
@@ -49,14 +61,18 @@ jobs:
       key_password: ${{ steps.gen.outputs.key_password }}
       package_name: ${{ steps.pkg.outputs.package_name }}
     steps:
-      - name: Set custom package name
+      - name: Set manager package name
         id: pkg
+        env:
+          REQUESTED_PACKAGE: ${{ inputs.package_name }}
         run: |
-          # ===== 自定义包名：想换名字只改这一行 =====
-          # 规则：全小写字母和点，如 com.example.manager
-          # 不要用官方的 me.weishu.kernelsu
-          echo "package_name=io.github.xyce3849.kmanager" >> $GITHUB_OUTPUT
-          echo "Custom package name: io.github.xyce3849.kmanager"
+          PACKAGE_NAME="${REQUESTED_PACKAGE:-io.github.xyce3849.kmanager}"
+          if [[ ! "$PACKAGE_NAME" =~ ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$ ]]; then
+            echo "ERROR: invalid Android package name: $PACKAGE_NAME"
+            exit 1
+          fi
+          echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "Manager package name: $PACKAGE_NAME"
 
       - name: Generate temporary keystore
         if: github.event_name == 'pull_request'
@@ -141,6 +157,7 @@ jobs:
     with:
       expected_size2: ${{ needs.generate-key.outputs.expected_size || '' }}
       expected_hash2: ${{ needs.generate-key.outputs.expected_hash || '' }}
+      package_name: ${{ needs.generate-key.outputs.package_name }}
     secrets: inherit
 
   build-ksuinit:
@@ -237,10 +254,30 @@ jobs:
       - name: Build with Gradle
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            ./gradlew clean assembleRelease -PIS_PR_BUILD=true
+            ./gradlew clean assembleRelease \
+              -PIS_PR_BUILD=true \
+              -PKSU_PACKAGE_NAME="${{ needs.generate-key.outputs.package_name }}"
           else
-            ./gradlew clean assembleRelease -PKSU_PACKAGE_NAME="${{ needs.generate-key.outputs.package_name }}"
+            ./gradlew clean assembleRelease \
+              -PKSU_PACKAGE_NAME="${{ needs.generate-key.outputs.package_name }}"
           fi
+
+      - name: Verify manager APK package
+        env:
+          EXPECTED_PACKAGE: ${{ needs.generate-key.outputs.package_name }}
+        run: |
+          APK=$(find manager/app/build/outputs/apk/release -maxdepth 1 -type f -name "*.apk" | head -n 1)
+          test -n "$APK"
+          if command -v apkanalyzer >/dev/null 2>&1; then
+            ACTUAL_PACKAGE=$(apkanalyzer manifest application-id "$APK")
+          else
+            ACTUAL_PACKAGE=$(aapt dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          fi
+          if [ "$ACTUAL_PACKAGE" != "$EXPECTED_PACKAGE" ]; then
+            echo "ERROR: manager APK applicationId is '$ACTUAL_PACKAGE', expected '$EXPECTED_PACKAGE'"
+            exit 1
+          fi
+          echo "Verified manager APK applicationId: $ACTUAL_PACKAGE"
 
       - name: Upload build artifact
         if: ${{ github.event_name == 'pull_request' || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')) || github.ref_type == 'tag' }}
@@ -360,6 +397,46 @@ jobs:
             -P "$SIGN_KEYSTORE_PASSWORD" \
             -S "$SIGN_KEY_PASSWORD" \
             --strip
+
+      - name: Verify final repacked APK
+        if: ${{ github.event_name == 'pull_request' || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')) || github.ref_type == 'tag' }}
+        env:
+          EXPECTED_PACKAGE: ${{ needs.generate-key.outputs.package_name }}
+        run: |
+          APK=$(find dist -maxdepth 1 -type f -name "*.apk" | head -n 1)
+          test -n "$APK"
+          if command -v apkanalyzer >/dev/null 2>&1; then
+            ACTUAL_PACKAGE=$(apkanalyzer manifest application-id "$APK")
+          else
+            ACTUAL_PACKAGE=$(aapt dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          fi
+          if [ "$ACTUAL_PACKAGE" != "$EXPECTED_PACKAGE" ]; then
+            echo "ERROR: final APK applicationId is '$ACTUAL_PACKAGE', expected '$EXPECTED_PACKAGE'"
+            exit 1
+          fi
+
+          TMP_VERIFY=$(mktemp -d)
+          trap 'rm -rf "$TMP_VERIFY"' EXIT
+          unzip -q "$APK" 'lib/*/libksud.so' -d "$TMP_VERIFY"
+          found=false
+          for lib in "$TMP_VERIFY"/lib/*/libksud.so; do
+            [ -f "$lib" ] || continue
+            found=true
+            echo "Checking $lib"
+            if ! strings "$lib" | grep -Fq "$EXPECTED_PACKAGE"; then
+              echo "ERROR: $lib does not contain expected package '$EXPECTED_PACKAGE'"
+              exit 1
+            fi
+            if strings "$lib" | grep -Fq 'me.weishu.kernelsu.pr'; then
+              echo "ERROR: PR package leaked into final ksud: $lib"
+              exit 1
+            fi
+          done
+          if [ "$found" != true ]; then
+            echo "ERROR: no libksud.so found in final APK"
+            exit 1
+          fi
+          echo "Final APK package and ksud package checks passed."
 
       - name: Upload build artifact
         if: ${{ github.event_name == 'pull_request' || (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')) || github.ref_type == 'tag' }}
