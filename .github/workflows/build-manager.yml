@@ -155,8 +155,12 @@ jobs:
     needs: generate-key
     uses: ./.github/workflows/build-lkm.yml
     with:
-      expected_size2: ${{ needs.generate-key.outputs.expected_size || '' }}
-      expected_hash2: ${{ needs.generate-key.outputs.expected_hash || '' }}
+      # 不再传递第二签名（expected_size2/expected_hash2）：
+      # 内核里编入第二签名会被管理器识别为 "PR 内核" 并显示警告横幅。
+      # 现在你的签名已直接写进 kernel/Kbuild 的第一签名（KSU_EXPECTED_SIZE/HASH），
+      # 无需第二签名。想恢复双签名共存时，把下面两行加回来即可：
+      # expected_size2: ${{ needs.generate-key.outputs.expected_size || '' }}
+      # expected_hash2: ${{ needs.generate-key.outputs.expected_hash || '' }}
       package_name: ${{ needs.generate-key.outputs.package_name }}
     secrets: inherit
 
